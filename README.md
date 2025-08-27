@@ -7,3 +7,18 @@
 - Passerelle holographique (AdS/CFT bridge) [à venir]
 
 Repo : https://github.com/hugohertault/holographic-cosmo-engine
+
+<!-- SWEEP_LEARNY_GALLERY_START -->
+### Learn-y sweep (auto)
+_Last update: 2025-08-27 07:32 UTC_
+
+
+**m2L2_-3.0__lamL2_0.0** — m2L2=-3.0, lamL2=0.0, loss=1.673e-03, Dp=3.000  
+![](enhanced_runs/sweep_learny/m2L2_-3.0__lamL2_0.0/phi.png)
+
+**m2L2_-2.8__lamL2_0.0** — m2L2=-2.8, lamL2=0.0, loss=4.165e-03, Dp=3.095  
+![](enhanced_runs/sweep_learny/m2L2_-2.8__lamL2_0.0/phi.png)
+
+**m2L2_-2.5__lamL2_0.5** — m2L2=-2.5, lamL2=0.5, loss=2.684e-03, Dp=3.225  
+![](enhanced_runs/sweep_learny/m2L2_-2.5__lamL2_0.5/phi.png)
+<!-- SWEEP_LEARNY_GALLERY_END -->

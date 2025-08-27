@@ -1,40 +1,22 @@
-# AdS5 Klein-Gordon PINN minimal solver (fixed AdS background, spherically symmetric)
-# - Equation (radial, 5D): phi'' + (4/r) phi' - (m^2/L^2) phi - (lambda/L^2) phi^3 = 0
-# - Asymptotic (r -> inf): phi(r) ~ A * r^{-Delta_+}, with Delta_+ = 2 + sqrt(4 + m^2 L^2)
-# - We encode phi(r) = phi0 + r^2 * g(r) to ensure phi'(0)=0 automatically.
-# - Loss = PDE residual (collocation) + tail penalty near r_max + small center penalty.
-# This is intended as a robust smoke-test building block.
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
-import math
 import torch
-from torch import nn, autograd
-import numpy as np
+import torch.nn as nn
+import torch.autograd as autograd
 import matplotlib.pyplot as plt
 
-# ---- Config ----
-@dataclass
-class EKGConfig:
-    r_max: float = 8.0
-    n_colloc: int = 512
-    m2L2: float = -2.5      # m^2 L^2  (BF bound is -4)
-    lamL2: float = 0.0      # lambda L^2
-    L: float = 1.0
-    w_tail: float = 1.0
-    w_center: float = 1e-4
-    lr: float = 2e-3
-    iters_adam: int = 400
-    seed: int = 1234
+def tanh():
+    return nn.Tanh()
 
-# ---- MLP ----
 class MLP(nn.Module):
-    def __init__(self, dim_in=1, dim_out=1, width=64, depth=4, act=nn.Tanh):
+    def __init__(self, in_dim=1, out_dim=1, width=64, depth=4):
         super().__init__()
-        layers = [nn.Linear(dim_in, width), act()]
+        layers = [nn.Linear(in_dim, width), tanh()]
         for _ in range(depth-1):
-            layers += [nn.Linear(width, width), act()]
-        layers += [nn.Linear(width, dim_out)]
+            layers += [nn.Linear(width, width), tanh()]
+        layers += [nn.Linear(width, out_dim)]
         self.net = nn.Sequential(*layers)
         for m in self.net:
             if isinstance(m, nn.Linear):
@@ -43,115 +25,122 @@ class MLP(nn.Module):
     def forward(self, x):
         return self.net(x)
 
-# ---- PINN for scalar with center-safe ansatz ----
 class PINNScalar(nn.Module):
-    def __init__(self, width=64, depth=4):
+    def __init__(self, width=64, depth=4, learn_y=False):
         super().__init__()
-        self.mlp = MLP(1, 1, width, depth, nn.Tanh)
-        # trainable phi0 to shift center value
+        self.mlp = MLP(1, 1, width, depth)
+        self.learn_y = learn_y
         self.phi0 = nn.Parameter(torch.tensor(0.0))
-    def forward(self, r):
-        # r: (N,1) tensor (requires_grad True for PDE)
+    def forward(self, r, Delta_plus=None):
+        # Regular center via r^2 factor: phi = phi0 + r^2 g(r)
         g = self.mlp(r)
-        # encode phi(r) = phi0 + r^2 * g(r) => phi'(0)=0
-        return self.phi0 + (r**2) * g
+        base = self.phi0 + (r**2) * g
+        if self.learn_y and (Delta_plus is not None):
+            # Learn y with phi = r^{Delta_plus} * y(r).
+            # Since base already has r^2, multiply by r^{Delta_plus-2}.
+            return (r.clamp_min(1e-6)**(Delta_plus - 2.0)) * base
+        return base
 
-# ---- PDE residual ----
+@dataclass
+class EKGConfig:
+    r_max: float = 8.0
+    n_colloc: int = 512
+    m2L2: float = -2.5
+    lamL2: float = 0.0
+    L: float = 1.0
+    w_tail: float = 1.0
+    w_center: float = 1e-6
+    lr: float = 2e-3
+    iters_adam: int = 400
+    seed: int = 1234
+    learn_y: bool = False
+    lbfgs_iters: int = 200
+
+def Delta_plus(m2L2):
+    return 2.0 + math.sqrt(max(0.0, 4.0 + m2L2))
+
 def KG_residual(phi, r, m2L2=-2.5, lamL2=0.0, L=1.0):
-    # phi: (N,1), r: (N,1) with requires_grad True
-    dphi_dr = autograd.grad(
-        phi, r, grad_outputs=torch.ones_like(phi),
-        create_graph=True, retain_graph=True, allow_unused=False
-    )[0]
-    d2phi_dr2 = autograd.grad(
-        dphi_dr, r, grad_outputs=torch.ones_like(dphi_dr),
-        create_graph=True, retain_graph=True, allow_unused=False
-    )[0]
-    # avoid division by zero at r=0 (we do not include exactly r=0 in PDE set)
-    res = d2phi_dr2 + (4.0/(r+1e-9)) * dphi_dr - (m2L2/(L**2))*phi - (lamL2/(L**2))*(phi**3)
-    return res
+    # phi'' + (4/r) phi' - (m^2 + lambda phi^2) phi = 0  (AdS5 schematic)
+    dphi = autograd.grad(phi, r, grad_outputs=torch.ones_like(phi),
+                         create_graph=True, retain_graph=True, allow_unused=True)[0]
+    if dphi is None:
+        dphi = torch.zeros_like(phi, requires_grad=True)
+    d2phi = autograd.grad(dphi, r, grad_outputs=torch.ones_like(dphi),
+                          create_graph=True, retain_graph=True, allow_unused=True)[0]
+    if d2phi is None:
+        d2phi = torch.zeros_like(phi, requires_grad=True)
+    potp = m2L2 * phi + lamL2 * (phi**3)
+    return d2phi + (4.0 / r.clamp_min(1e-6)) * dphi - potp
 
-# ---- Tail boundary penalty (AdS falloff) ----
-def tail_penalty(phi_tail, r_tail, m2L2=-2.5, L=1.0):
-    Delta_plus = 2.0 + math.sqrt(4.0 + m2L2)  # independent of L (m2 appears as m2L2/L^2)
-    # target: r^{Delta+} * phi(r) -> constant  (we penalize it toward 0 for smoke simplicity)
-    scaled = (r_tail**Delta_plus) * phi_tail
-    return (scaled**2).mean(), Delta_plus
+def save_plot_detached(r, phi, out_png):
+    import numpy as np
+    rp = r.detach().cpu().numpy().ravel()
+    ph = phi.detach().cpu().numpy().ravel()
+    plt.figure(figsize=(5.0, 3.4))
+    plt.plot(rp, ph, lw=2)
+    plt.xlabel("r"); plt.ylabel("phi(r)")
+    plt.title("AdS5 KG PINN")
+    plt.tight_layout()
+    Path(out_png).parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(out_png, dpi=140, bbox_inches="tight")
+    plt.close()
 
-# ---- Small center penalty (optional) ----
-def center_penalty(model, eps=1e-3):
-    # Evaluate dphi/dr at small radius ~ eps, penalize it to be ~0 (should be small given ansatz)
-    r = torch.tensor([[eps]], dtype=torch.float32, requires_grad=True)
-    phi = model(r)
-    dphi_dr = autograd.grad(phi, r, grad_outputs=torch.ones_like(phi), create_graph=True)[0]
-    return (dphi_dr**2).mean()
-
-# ---- Training ----
-def train_ekg(cfg: EKGConfig, model: PINNScalar, outdir: Path):
+def train_ekg(cfg: EKGConfig, model: PINNScalar, out_dir=None):
     torch.manual_seed(cfg.seed)
-    np.random.seed(cfg.seed)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
+    # collocation points
+    r = torch.linspace(1e-6, cfg.r_max, cfg.n_colloc, device=device).view(-1,1)
+    r.requires_grad_(True)
 
-    outdir.mkdir(parents=True, exist_ok=True)
+    dp = Delta_plus(cfg.m2L2)
 
-    # collocation points (exclude exact 0 to avoid 1/r)
-    r_in = torch.rand(cfg.n_colloc, 1) * (cfg.r_max - 1e-3) + 1e-3
-    r_in = r_in.requires_grad_(True)
-
-    # tail points near r_max
-    n_tail = max(64, cfg.n_colloc // 4)
-    r_tail = torch.rand(n_tail, 1) * (cfg.r_max - 0.8*cfg.r_max) + 0.8*cfg.r_max
-    r_tail = r_tail.requires_grad_(True)
+    def eval_losses():
+        phi = model(r, Delta_plus=dp if cfg.learn_y else None)
+        R = KG_residual(phi, r, m2L2=cfg.m2L2, lamL2=cfg.lamL2, L=cfg.L)
+        loss_pde = (R**2).mean()
+        denom = (r**dp).clamp_min(1e-6)
+        loss_tail = ((phi / denom)**2).mean()
+        loss_center = (model.phi0**2)
+        loss = loss_pde + cfg.w_tail*loss_tail + cfg.w_center*loss_center
+        return loss, loss_pde, loss_tail, loss_center, phi
 
     opt = torch.optim.Adam(model.parameters(), lr=cfg.lr)
-
-    for it in range(1, cfg.iters_adam + 1):
-        opt.zero_grad()
-
-        # PDE residual
-        phi_in = model(r_in)
-        res = KG_residual(phi_in, r_in, m2L2=cfg.m2L2, lamL2=cfg.lamL2, L=cfg.L)
-        loss_pde = (res**2).mean()
-
-        # Tail penalty
-        phi_tail = model(r_tail)
-        loss_tail, Dp = tail_penalty(phi_tail, r_tail, m2L2=cfg.m2L2, L=cfg.L)
-
-        # Center penalty
-        loss_center = center_penalty(model) * cfg.w_center
-
-        loss = loss_pde + cfg.w_tail*loss_tail + loss_center
+    # Adam warmup
+    for it in range(1, cfg.iters_adam+1):
+        opt.zero_grad(set_to_none=True)
+        loss, lpde, ltail, lcent, phi = eval_losses()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
         opt.step()
+        if it == 1 or it % 200 == 0:
+            print(f"[{it:04d}] L={float(loss):.3e} | KG={float(lpde):.3e} | tail={float(ltail):.3e} | center={float(lcent):.3e} | Dp={dp:.3f}")
 
-        if it % 200 == 0 or it == 1:
-            # convert to float for logging
-            print(f"[{it:04d}] L={float(loss):.3e} | KG={float(loss_pde):.3e} | "
-                  f"tail={float(loss_tail):.3e} | center={float(loss_center):.3e} | Dp={Dp:.3f}")
+    # LBFGS polish (optional)
+    if cfg.lbfgs_iters > 0:
+        lbfgs = torch.optim.LBFGS(model.parameters(), max_iter=cfg.lbfgs_iters,
+                                  tolerance_grad=1e-7, tolerance_change=1e-9,
+                                  line_search_fn="strong_wolfe")
+        def closure():
+            lbfgs.zero_grad()
+            loss, _, _, _, _ = eval_losses()
+            loss.backward()
+            return loss
+        lbfgs.step(closure)
 
-    # Plot solution
-    with torch.no_grad():
-        r_plot = torch.linspace(0.0, cfg.r_max, 400).unsqueeze(1)
-        phi_plot = model(r_plot).squeeze(1).cpu().numpy()
-        r_np = r_plot.squeeze(1).cpu().numpy()
+    # Final evaluation (IMPORTANT: no torch.no_grad() here; we want autograd inside eval_losses)
+    loss, lpde, ltail, lcent, phi = eval_losses()
 
-    import matplotlib
-    matplotlib.use("Agg")
-    fig, ax = plt.subplots(figsize=(6,4))
-    ax.plot(r_np, phi_plot, lw=2)
-    ax.set_xlabel("r")
-    ax.set_ylabel("phi(r)")
-    ax.set_title("AdS5 KG PINN (smoke)")
-    fig.tight_layout()
-    fig_path = outdir / "phi.png"
-    fig.savefig(fig_path, dpi=150)
-    plt.close(fig)
+    # Save detached plot
+    out_dir = Path(out_dir) if out_dir else Path("enhanced_runs/quick_smoke_ekg")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    fig_path = out_dir/"phi.png"
+    save_plot_detached(r, phi, fig_path)
 
     return {
-        "loss": float(loss),
-        "loss_pde": float(loss_pde),
-        "loss_tail": float(loss_tail),
-        "loss_center": float(loss_center),
-        "Delta_plus": float(2.0 + math.sqrt(4.0 + cfg.m2L2)),
+        "loss": float((lpde + cfg.w_tail*ltail + cfg.w_center*lcent).item()),
+        "loss_pde": float(lpde.item()),
+        "loss_tail": float(ltail.item()),
+        "loss_center": float(lcent.item()),
+        "Delta_plus": float(dp),
         "figure": str(fig_path)
     }
