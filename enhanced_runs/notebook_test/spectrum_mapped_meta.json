@@ -1,0 +1,24 @@
+{
+  "timestamp_utc": "2025-08-28 06:55:28",
+  "evals": [
+    -335.5655823269062,
+    -0.8945088769723184,
+    0.10246502758429332,
+    0.4148043188321032,
+    1.0026388348447948,
+    1.917472739057796,
+    3.157504741319594,
+    4.7156834900519735
+  ],
+  "params": {
+    "m2L2": -2.5,
+    "lamL2": 0.5,
+    "L": 1.0,
+    "Delta_plus": 3.224744871391589
+  },
+  "paths": {
+    "png": "/content/holographic-cosmo-engine/enhanced_runs/notebook_test/spectrum_mapped.png",
+    "r": "/content/holographic-cosmo-engine/enhanced_runs/notebook_test/r.npy",
+    "phi": "/content/holographic-cosmo-engine/enhanced_runs/notebook_test/phi.npy"
+  }
+}
