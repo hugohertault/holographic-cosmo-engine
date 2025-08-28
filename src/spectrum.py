@@ -283,3 +283,20 @@ if __name__ == "__main__":
         main_cli(repo_root=repo, target_run=None, k=8)
     except Exception as e:
         print("Spectrum CLI error:", repr(e))
+
+
+def save_spectrum_plot(r, evals, out_png, title="Spectrum"):
+    import numpy as np, matplotlib.pyplot as plt, os
+    plt.figure(figsize=(6,3.2))
+    idx = np.arange(len(evals))
+    plt.scatter(idx, evals)
+    plt.plot(idx, evals)
+    plt.axhline(0.0, linestyle="--", linewidth=1)
+    plt.xlabel("Mode index")
+    plt.ylabel("Eigenvalue lambda")
+    plt.title(title)
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(str(out_png)), exist_ok=True)
+    plt.savefig(str(out_png), dpi=150, bbox_inches="tight")
+    plt.close()
+
