@@ -1,3 +1,4 @@
+from scipy import integrate
 import sys, json
 from pathlib import Path
 import numpy as np
@@ -45,7 +46,7 @@ print("First eigenvalues (sparse):", vals[:8])
 plt.figure(figsize=(6,3))
 for j in range(min(4, vecs.shape[1])):
     y = vecs[:,j]
-    y = y/np.sqrt(np.trapz(y*y, r))  # normalize by L2 on r
+    y = y/np.sqrt(integrate.trapezoid(y*y, r))  # normalize by L2 on r
     plt.plot(r, y + 0.5*j, lw=1)
 plt.title("First few eigenmodes (offset)")
 plt.xlabel("r"); plt.ylabel("y_n (offset)")
