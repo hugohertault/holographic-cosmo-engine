@@ -1,0 +1,15 @@
+# Minimal training profile (fast smoke)
+rmax: 8.0
+n_colloc: 512
+m2L2: -2.5
+lamL2: 0.5
+L: 1.0
+w_kg: 1.0
+w_tail: 1.0
+w_center: 1.0
+w_ein: 1.0
+w_nec: 0.0
+w_dec: 0.0
+iters_adam: 200
+lr: 0.002
+device: "cpu"

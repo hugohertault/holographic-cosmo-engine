@@ -1,0 +1,4 @@
+[console_scripts]
+hce-analyze = hce.cli:main_analyze
+hce-spectrum = hce.cli:main_spectrum
+hce-train = hce.cli:main_train
