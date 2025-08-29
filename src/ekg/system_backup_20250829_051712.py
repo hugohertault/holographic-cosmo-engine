@@ -104,16 +104,16 @@ def KG_residual(phi, f, N, r, m2L2, lamL2, L):
 def einstein_residuals(phi, f, N, r, m2L2, lamL2, L):
     """
     Mixed components residuals in 5D for metric:
-    ds^2 = -N^2 f dt^2 + f^{-1} dr^2 + r^2 dΩ_3^2
+      ds^2 = -N^2 f dt^2 + f^{-1} dr^2 + r^2 dΩ_3^2
     Use:
-    G^t_t = 3*(1 - f)/r^2 - (3/2) f'/r
-    G^r_r = 3*(1 - f)/r^2 - (3/2) (f * (ln N)')/r
-    Λ = -6/L^2 , units 8πG_5=1
+      G^t_t = 3*(1 - f)/r^2 - (3/2) f'/r
+      G^r_r = 3*(1 - f)/r^2 - (3/2) (f * (ln N)')/r
+      Λ = -6/L^2 , units 8πG_5=1
     T^t_t = -ρ, ρ = 1/2 f φ'^2 + V
     T^r_r =  p_r = 1/2 f φ'^2 - V
     Residuals (should be 0):
-    E^t_t = G^t_t + Λ - 8πG T^t_t = G^t_t + Λ + ρ
-    E^r_r = G^r_r + Λ - 8πG T^r_r = G^r_r + Λ - p_r
+      E^t_t = G^t_t + Λ - 8πG T^t_t = G^t_t + Λ + ρ
+      E^r_r = G^r_r + Λ - 8πG T^r_r = G^r_r + Λ - p_r
     """
     eps = 1e-8
     phi_r = d_dr(phi, r)
