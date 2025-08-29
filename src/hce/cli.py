@@ -1,41 +1,59 @@
-import argparse, sys
-from pathlib import Path
-from .config import TrainConfig
-from .engine import run_train
+import argparse, pathlib, json, math, os
+from .engine import train_hybrid
 
-def _add_common(o):
-    o.add_argument("--config", type=str, help="YAML TrainConfig", required=True)
-    o.add_argument("--out", type=str, help="output dir", required=True)
+def main_train():
+    p = argparse.ArgumentParser()
+    p.add_argument("--config", type=str, required=False)
+    p.add_argument("--out", type=str, required=True)
+    p.add_argument("--resume", type=str, default=None)
+    p.add_argument("--iters_adam", type=int, default=800)
+    p.add_argument("--iters_lbfgs", type=int, default=200)
+    p.add_argument("--adam_lr", type=float, default=2e-3)
+    p.add_argument("--use_amp", action="store_true")
+    args = p.parse_args()
 
-def main_train(argv=None):
-    p = argparse.ArgumentParser(prog="hce-train")
-    _add_common(p)
-    args = p.parse_args(argv)
-    cfg = TrainConfig.from_yaml(args.config)
-    stats = run_train(cfg, args.out)
-    print("=== hce-train done ===")
-    print(stats)
+    # minimal inline defaults (config can override later)
+    cfg = dict(m2L2=-2.5, lamL2=0.5, L=1.0, n_colloc=512, rmax=8.0, w_kg=1.0, w_ein=0.01, w_tail=0.1, w_center=0.0)
+    if args.config and pathlib.Path(args.config).exists():
+        with open(args.config) as f: cfg.update(json.load(f) if args.config.endswith(".json") else {})
 
-def main_analyze(argv=None):
-    from analysis.ekg_analysis import run_analysis
-    p = argparse.ArgumentParser(prog="hce-analyze")
-    p.add_argument("--run", type=str, required=True, help="run dir with r.txt/phi.txt/f.txt/N.txt")
-    p.add_argument("--Delta_plus", type=float, required=True)
-    args = p.parse_args(argv)
-    summary = run_analysis(Path(args.run), Delta_plus=args.Delta_plus)
-    print("=== hce-analyze summary ===")
-    print(summary)
+    stats = train_hybrid(
+        out_dir=pathlib.Path(args.out),
+        m2L2=cfg["m2L2"], lamL2=cfg["lamL2"], L=cfg["L"],
+        n_colloc=cfg["n_colloc"], rmax=cfg["rmax"],
+        iters_adam=args.iters_adam, iters_lbfgs=args.iters_lbfgs, adam_lr=args.adam_lr,
+        w_kg=cfg["w_kg"], w_ein=cfg["w_ein"], w_tail=cfg["w_tail"], w_center=cfg["w_center"],
+        use_amp=args.use_amp,
+        resume=(pathlib.Path(args.resume) if args.resume else None),
+    )
+    print(f"Done. steps={stats.steps} loss={stats.loss:.3e} wall={stats.wall_s:.1f}s")
 
-def main_spectrum(argv=None):
-    from spectrum_sparse import eigs_sparse
-    import numpy as np
-    p = argparse.ArgumentParser(prog="hce-spectrum")
+def main_analyze():
+    p = argparse.ArgumentParser()
     p.add_argument("--run", type=str, required=True)
-    p.add_argument("--k", type=int, default=6)
-    p.add_argument("--which", type=str, default="SA")
-    args = p.parse_args(argv)
-    run = Path(args.run)
-    r = np.loadtxt(run/"r.txt")
-    phi = np.loadtxt(run/"phi.txt")
-    vals, vecs, _ = eigs_sparse(r, phi, m2L2=-2.5, lamL2=0.5, L=1.0, k=args.k, which=args.which)
-    print("eigs:", vals[:args.k])
+    p.add_argument("--Delta_plus", type=float, required=False, default=3.224744871391589)
+    args = p.parse_args()
+    run = pathlib.Path(args.run)
+    prof = torch.load(str(pathlib.Path(run)/"profiles.pt"), map_location="cpu")
+    r = prof["r"].numpy().ravel(); phi = prof["phi"].numpy().ravel()
+    # lightweight check: effective falloff slope
+    import numpy as np, matplotlib.pyplot as plt
+    eps = 1e-9
+    mask = r > (0.7*r.max())
+    reff = r[mask]; phit = np.abs(phi[mask]) + eps
+    y = -np.gradient(np.log(phit), np.log(reff+eps))
+    print({"Delta_eff_tail_mean": float(y.mean()), "Delta_plus_theory": args.Delta_plus})
+    # quick plot
+    fig = plt.figure()
+    plt.loglog(r+eps, np.abs(phi)+eps)
+    plt.title("phi(r) (abs)"); plt.xlabel("r"); plt.ylabel("|phi|")
+    out = pathlib.Path(run)/"quick_phi.png"; fig.savefig(out, dpi=120); plt.close(fig)
+    print(f"Saved {out}")
+
+if __name__ == "__main__":
+    # allow: python -m hce.cli main_train ...
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] in ("main_train","main_analyze"):
+        globals()[sys.argv[1]]()
+    else:
+        main_train()
